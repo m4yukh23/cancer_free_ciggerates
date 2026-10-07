@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#111827">
     <title>Webcam Selfie View</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
     <style>
       :root {
         color-scheme: dark;
@@ -108,6 +109,10 @@
       const panel = document.querySelector("#start-panel");
       const startButton = document.querySelector("#start-camera");
       const message = document.querySelector("#message");
+      let handTracker;
+      let handLandmarks = [];
+      let isTracking = false;
+      let lastProcessedVideoTime = -1;
 
       function resizeCanvas() {
         const pixelRatio = window.devicePixelRatio || 1;
@@ -139,19 +144,86 @@
             height
           );
           context.restore();
+
+          const pixelRatio = window.devicePixelRatio || 1;
+          for (const landmarks of handLandmarks) {
+            for (const landmarkIndex of [4, 8]) {
+              const landmark = landmarks[landmarkIndex];
+              const x = width - (landmark.x * video.videoWidth - sourceX) * scale;
+              const y = (landmark.y * video.videoHeight - sourceY) * scale;
+              const radius = 12 * pixelRatio;
+
+              context.save();
+              context.shadowColor = "#a78bfa";
+              context.shadowBlur = 22 * pixelRatio;
+              context.fillStyle = "#c4b5fd";
+              context.beginPath();
+              context.arc(x, y, radius, 0, Math.PI * 2);
+              context.fill();
+              context.restore();
+            }
+          }
         }
 
         window.requestAnimationFrame(renderFrame);
       }
 
+      function handleTrackingError(error) {
+        if (!isTracking) return;
+
+        isTracking = false;
+        video.srcObject?.getTracks().forEach((track) => track.stop());
+        video.srcObject = null;
+        handLandmarks = [];
+        handTracker?.close();
+        handTracker = null;
+        panel.hidden = false;
+        startButton.disabled = false;
+        message.textContent =
+          "We couldn’t start hand tracking. Check your camera permission and internet connection, then try again.";
+        console.error("Unable to track hands:", error);
+      }
+
+      function scheduleHandFrame() {
+        if (!isTracking) return;
+
+        if ("requestVideoFrameCallback" in video) {
+          video.requestVideoFrameCallback(processHandFrame);
+        } else {
+          window.requestAnimationFrame(processHandFrame);
+        }
+      }
+
+      async function processHandFrame() {
+        if (!isTracking) return;
+
+        if (!("requestVideoFrameCallback" in video)) {
+          if (video.currentTime === lastProcessedVideoTime) {
+            window.requestAnimationFrame(processHandFrame);
+            return;
+          }
+          lastProcessedVideoTime = video.currentTime;
+        }
+
+        try {
+          await handTracker.send({ image: video });
+          scheduleHandFrame();
+        } catch (error) {
+          handleTrackingError(error);
+        }
+      }
+
       async function startCamera() {
         startButton.disabled = true;
-        message.textContent = "Requesting camera access…";
+        message.textContent = "Starting your camera and hand tracking…";
         let stream;
 
         try {
           if (!navigator.mediaDevices?.getUserMedia) {
             throw new Error("Camera access is unavailable in this browser or page context.");
+          }
+          if (typeof Hands === "undefined") {
+            throw new Error("MediaPipe Hands could not be loaded.");
           }
 
           stream = await navigator.mediaDevices.getUserMedia({
@@ -161,16 +233,36 @@
           video.srcObject = stream;
           await video.play();
 
+          handTracker = new Hands({
+            locateFile: (file) =>
+              `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+          });
+          handTracker.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+          });
+          handTracker.onResults((results) => {
+            handLandmarks = results.multiHandLandmarks || [];
+          });
+          await handTracker.send({ image: video });
+
           resizeCanvas();
+          isTracking = true;
+          lastProcessedVideoTime = video.currentTime;
           panel.hidden = true;
           window.requestAnimationFrame(renderFrame);
+          scheduleHandFrame();
         } catch (error) {
           stream?.getTracks().forEach((track) => track.stop());
           video.srcObject = null;
+          handTracker?.close();
+          handTracker = null;
           startButton.disabled = false;
           message.textContent =
-            "We couldn’t start your camera. Check your browser permission and try again.";
-          console.error("Unable to start the webcam:", error);
+            "We couldn’t start your camera or hand tracking. Check your camera permission and internet connection, then try again.";
+          console.error("Unable to start the webcam and hand tracking:", error);
         }
       }
 
