@@ -110,7 +110,7 @@
       const startButton = document.querySelector("#start-camera");
       const message = document.querySelector("#message");
       let handTracker;
-      let handLandmarks = [];
+      let hands = [];
       let isTracking = false;
       let lastProcessedVideoTime = -1;
 
@@ -146,26 +146,79 @@
           context.restore();
 
           const pixelRatio = window.devicePixelRatio || 1;
-          for (const landmarks of handLandmarks) {
+          for (const hand of hands) {
             for (const landmarkIndex of [4, 8]) {
-              const landmark = landmarks[landmarkIndex];
+              const landmark = hand.landmarks[landmarkIndex];
               const x = width - (landmark.x * video.videoWidth - sourceX) * scale;
               const y = (landmark.y * video.videoHeight - sourceY) * scale;
               const radius = 12 * pixelRatio;
 
               context.save();
-              context.shadowColor = "#a78bfa";
+              context.shadowColor = hand.isPinching ? "#facc15" : "#a78bfa";
               context.shadowBlur = 22 * pixelRatio;
-              context.fillStyle = "#c4b5fd";
+              context.fillStyle = hand.isPinching ? "#fde047" : "#c4b5fd";
               context.beginPath();
               context.arc(x, y, radius, 0, Math.PI * 2);
               context.fill();
               context.restore();
             }
           }
+
+          if (hands.some((hand) => hand.isPinching)) {
+            context.save();
+            context.font = `700 ${32 * pixelRatio}px system-ui, sans-serif`;
+            context.textAlign = "center";
+            context.textBaseline = "top";
+            context.shadowColor = "#facc15";
+            context.shadowBlur = 18 * pixelRatio;
+            context.fillStyle = "#fde047";
+            context.fillText("PINCH", width / 2, 28 * pixelRatio);
+            context.restore();
+          }
         }
 
         window.requestAnimationFrame(renderFrame);
+      }
+
+      function updateHands(results) {
+        const detectedHands = results.multiHandLandmarks || [];
+        const previousHands = hands;
+
+        hands = detectedHands.map((landmarks, handIndex) => {
+          const previous = previousHands[handIndex];
+          const smoothedLandmarks = landmarks.map((landmark, landmarkIndex) => {
+            const priorLandmark = previous?.landmarks[landmarkIndex];
+            if (!priorLandmark) return { x: landmark.x, y: landmark.y };
+
+            return {
+              x: priorLandmark.x * 0.35 + landmark.x * 0.65,
+              y: priorLandmark.y * 0.35 + landmark.y * 0.65
+            };
+          });
+          const thumb = smoothedLandmarks[4];
+          const index = smoothedLandmarks[8];
+          const wrist = smoothedLandmarks[0];
+          const middleKnuckle = smoothedLandmarks[9];
+          const pixelDistance = (first, second) =>
+            Math.hypot(
+              (first.x - second.x) * video.videoWidth,
+              (first.y - second.y) * video.videoHeight
+            );
+          const referenceDistance = pixelDistance(wrist, middleKnuckle);
+          const pinchDistance = pixelDistance(thumb, index);
+          const pinchDetected =
+            referenceDistance > 0 &&
+            pinchDistance / referenceDistance < 0.38;
+          const pinchFramesRemaining = pinchDetected
+            ? 4
+            : Math.max(0, (previous?.pinchFramesRemaining || 0) - 1);
+
+          return {
+            landmarks: smoothedLandmarks,
+            pinchFramesRemaining,
+            isPinching: pinchFramesRemaining > 0
+          };
+        });
       }
 
       function handleTrackingError(error) {
@@ -174,7 +227,7 @@
         isTracking = false;
         video.srcObject?.getTracks().forEach((track) => track.stop());
         video.srcObject = null;
-        handLandmarks = [];
+        hands = [];
         handTracker?.close();
         handTracker = null;
         panel.hidden = false;
@@ -244,7 +297,7 @@
             minTrackingConfidence: 0.5
           });
           handTracker.onResults((results) => {
-            handLandmarks = results.multiHandLandmarks || [];
+            updateHands(results);
           });
           await handTracker.send({ image: video });
 
