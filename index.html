@@ -109,12 +109,28 @@
       const CIG_TILT_DEG = 65;
       const MOUTH_OPEN_THRESHOLD = 0.28;
       const NEAR_MOUTH_FACTOR = 0.3;
+      const SMOKE_MAX = 600;
+      const SMOKE_RATE = 6;
+      const SMOKE_GROWTH = 0.9;
+      const SMOKE_RISE = 9;
       let currentCigLengthFactor = CIG_LENGTH_FACTOR;
       let currentCigAngleDeg = CIG_ANGLE_DEG;
       let currentCigTiltDeg = CIG_TILT_DEG;
 
       const canvas = document.querySelector("#camera-view");
       const context = canvas.getContext("2d");
+      const smokeSprite = document.createElement("canvas");
+      smokeSprite.width = 64;
+      smokeSprite.height = 64;
+      const smokeSpriteContext = smokeSprite.getContext("2d");
+      const smokeGradient = smokeSpriteContext.createRadialGradient(32, 32, 0, 32, 32, 32);
+      smokeGradient.addColorStop(0, "rgba(255, 255, 255, 0.9)");
+      smokeGradient.addColorStop(0.35, "rgba(255, 255, 255, 0.4)");
+      smokeGradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+      smokeSpriteContext.fillStyle = smokeGradient;
+      smokeSpriteContext.fillRect(0, 0, 64, 64);
+      const smokeParticles = [];
+      let smokeSpawnAccumulator = 0;
       const video = document.querySelector("#camera-source");
       const panel = document.querySelector("#start-panel");
       const startButton = document.querySelector("#start-camera");
@@ -128,6 +144,7 @@
       let inhale = 0;
       let lastInhaleUpdateTime = null;
       let inhaleStatus = "";
+      let lastSmokeUpdateTime = null;
 
       function resizeCanvas() {
         const pixelRatio = window.devicePixelRatio || 1;
@@ -265,6 +282,69 @@
         context.restore();
       }
 
+      function updateAndDrawSmoke(deltaSeconds, isBlowing, mouthPoint, faceWidth) {
+        if (isBlowing && mouthPoint && faceWidth > 0) {
+          const particlesPerSecond = (2 + SMOKE_RATE * inhale) * 30;
+          smokeSpawnAccumulator += particlesPerSecond * deltaSeconds;
+          const spawnCount = Math.floor(smokeSpawnAccumulator);
+          smokeSpawnAccumulator -= spawnCount;
+
+          for (let index = 0; index < spawnCount; index += 1) {
+            if (smokeParticles.length >= SMOKE_MAX) smokeParticles.shift();
+
+            const spread = (Math.random() - 0.5) * (Math.PI / 3);
+            const direction = Math.PI / 2 + spread;
+            const speed = (35 + inhale * 90) * (0.8 + Math.random() * 0.4);
+            smokeParticles.push({
+              x: mouthPoint.x + (Math.random() - 0.5) * faceWidth * 0.06,
+              y: mouthPoint.y + faceWidth * 0.025,
+              vx: Math.cos(direction) * speed,
+              vy: Math.sin(direction) * speed,
+              radius: faceWidth * 0.06 * (0.8 + Math.random() * 0.4),
+              life: 1,
+              maxAlpha: 0.45,
+              driftPhase: Math.random() * Math.PI * 2,
+              age: 0,
+              lifetime: 2.5 + Math.random() * 1.5,
+              previousDrift: 0
+            });
+          }
+        } else {
+          smokeSpawnAccumulator = 0;
+        }
+
+        const damping = Math.pow(0.985, deltaSeconds * 60);
+        for (let index = smokeParticles.length - 1; index >= 0; index -= 1) {
+          const particle = smokeParticles[index];
+          particle.age += deltaSeconds;
+          particle.life = Math.max(0, 1 - particle.age / particle.lifetime);
+          if (particle.life <= 0) {
+            smokeParticles.splice(index, 1);
+            continue;
+          }
+
+          particle.vx *= damping;
+          particle.vy *= damping;
+          if (particle.age > 0.15) particle.vy -= SMOKE_RISE * deltaSeconds;
+          const drift = Math.sin(particle.age * 2.4 + particle.driftPhase) * 10;
+          particle.x += particle.vx * deltaSeconds + (drift - particle.previousDrift);
+          particle.y += particle.vy * deltaSeconds;
+          particle.previousDrift = drift;
+          particle.radius *= 1 + SMOKE_GROWTH * deltaSeconds;
+
+          context.save();
+          context.globalAlpha = particle.maxAlpha * particle.life;
+          context.drawImage(
+            smokeSprite,
+            particle.x - particle.radius,
+            particle.y - particle.radius,
+            particle.radius * 2,
+            particle.radius * 2
+          );
+          context.restore();
+        }
+      }
+
       function renderFrame() {
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
           const width = canvas.width;
@@ -279,11 +359,16 @@
             ? 0
             : Math.min((now - lastInhaleUpdateTime) / 1000, 0.1);
           lastInhaleUpdateTime = now;
+          const smokeDeltaSeconds = lastSmokeUpdateTime === null
+            ? 0
+            : Math.min((now - lastSmokeUpdateTime) / 1000, 0.1);
+          lastSmokeUpdateTime = now;
           let cigaretteAtMouth = false;
           let chargingInhale = false;
+          let mouthPoint = null;
 
           if (mouth) {
-            const mouthPoint = mapVideoPointToCanvas(
+            mouthPoint = mapVideoPointToCanvas(
               mouth.center,
               width,
               scale,
@@ -318,10 +403,13 @@
 
           if (chargingInhale) {
             inhale = Math.min(1, inhale + 0.5 * deltaSeconds);
+          } else if (mouth?.isOpen && inhale > 0) {
+            inhale = Math.max(0, inhale - 0.45 * deltaSeconds);
           } else if (!cigaretteAtMouth) {
             inhale = Math.max(0, inhale - 0.3 * deltaSeconds);
           }
 
+          const isBlowing = Boolean(mouth?.isOpen && inhale > 0.05);
           if (hands.some((hand) => hand.isPinching) && mouth?.isOpen && inhale > 0.3) {
             inhaleStatus = "Blow it out!";
           } else if (chargingInhale) {
@@ -376,6 +464,13 @@
             }
           }
 
+          updateAndDrawSmoke(
+            smokeDeltaSeconds,
+            isBlowing,
+            mouthPoint,
+            mouth ? mouth.faceWidth * scale : 0
+          );
+
           if (mouth) {
             const { x, y } = mapVideoPointToCanvas(
               mouth.center,
@@ -405,7 +500,7 @@
             18 * pixelRatio
           );
           context.fillText(
-            `MOUTH ${mouth ? mouth.open.toFixed(2) : "--"}  ${mouth?.isOpen ? "OPEN" : "CLOSED"}`,
+            `MOUTH ${mouth ? mouth.open.toFixed(2) : "--"}  ${mouth?.isOpen ? "OPEN" : "CLOSED"}  SMOKE ${smokeParticles.length}`,
             width - 18 * pixelRatio,
             40 * pixelRatio
           );
