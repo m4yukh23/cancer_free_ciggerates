@@ -586,6 +586,56 @@
           context.restore();
 
           const pixelRatio = window.devicePixelRatio || 1;
+          context.save();
+          context.translate(width / 2, height / 2);
+          context.scale(width / 2, height / 2);
+          const vignette = context.createRadialGradient(0, 0, 0, 0, 0, 1);
+          vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
+          vignette.addColorStop(0.55, "rgba(0, 0, 0, 0.02)");
+          vignette.addColorStop(0.82, "rgba(0, 0, 0, 0.16)");
+          vignette.addColorStop(1, "rgba(0, 0, 0, 0.34)");
+          context.fillStyle = vignette;
+          context.fillRect(-1, -1, 2, 2);
+          context.restore();
+
+          for (const hand of hands) {
+            if (!hand.isPinching) continue;
+
+            const pinchPoint = mapVideoPointToCanvas(
+              hand.cigarette,
+              width,
+              scale,
+              sourceX,
+              sourceY
+            );
+            const lightRadius =
+              hand.cigarette.handSize * scale * 0.9 * (1 + inhale * 0.8);
+            const warmLight = context.createRadialGradient(
+              pinchPoint.x,
+              pinchPoint.y,
+              0,
+              pinchPoint.x,
+              pinchPoint.y,
+              lightRadius
+            );
+            warmLight.addColorStop(
+              0,
+              `rgba(255, 166, 73, ${0.12 + inhale * 0.2})`
+            );
+            warmLight.addColorStop(0.45, `rgba(255, 126, 38, ${0.05 + inhale * 0.08})`);
+            warmLight.addColorStop(1, "rgba(255, 102, 24, 0)");
+            context.save();
+            context.globalCompositeOperation = "screen";
+            context.fillStyle = warmLight;
+            context.fillRect(
+              pinchPoint.x - lightRadius,
+              pinchPoint.y - lightRadius,
+              lightRadius * 2,
+              lightRadius * 2
+            );
+            context.restore();
+          }
+
           for (const hand of hands) {
             if (hand.isPinching) {
               drawCigarette(hand, width, height, sourceX, sourceY, scale, pixelRatio);
