@@ -113,6 +113,7 @@
       const SMOKE_RATE = 6;
       const SMOKE_GROWTH = 0.9;
       const SMOKE_RISE = 9;
+      const EMBER_WISP_INTERVAL = 0.1;
       let currentCigLengthFactor = CIG_LENGTH_FACTOR;
       let currentCigAngleDeg = CIG_ANGLE_DEG;
       let currentCigTiltDeg = CIG_TILT_DEG;
@@ -131,6 +132,7 @@
       smokeSpriteContext.fillRect(0, 0, 64, 64);
       const smokeParticles = [];
       let smokeSpawnAccumulator = 0;
+      let emberWispAccumulator = 0;
       const video = document.querySelector("#camera-source");
       const panel = document.querySelector("#start-panel");
       const startButton = document.querySelector("#start-camera");
@@ -145,6 +147,7 @@
       let lastInhaleUpdateTime = null;
       let inhaleStatus = "";
       let lastSmokeUpdateTime = null;
+      let debugEnabled = false;
 
       function resizeCanvas() {
         const pixelRatio = window.devicePixelRatio || 1;
@@ -169,11 +172,18 @@
           sourceY
         );
         const projectedFullLength =
-          handSize * scale * currentCigLengthFactor *
+          Math.max(
+            handSize * scale * 0.25,
+            (handSize * currentCigLengthFactor - hand.cigarette.burnedLength) * scale
+          ) *
           Math.cos((currentCigTiltDeg * Math.PI) / 180);
 
         return {
           anchor,
+          emberEnd: {
+            x: anchor.x + Math.cos(hand.cigarette.angle) * projectedFullLength * 0.6,
+            y: anchor.y + Math.sin(hand.cigarette.angle) * projectedFullLength * 0.6
+          },
           filterEnd: {
             x: anchor.x - Math.cos(angle) * projectedFullLength * 0.4,
             y: anchor.y - Math.sin(angle) * projectedFullLength * 0.4
@@ -345,6 +355,39 @@
         }
       }
 
+      function emitEmberWisps(deltaSeconds, pinchingHands, width, sourceX, sourceY, scale) {
+        if (pinchingHands.length === 0) {
+          emberWispAccumulator = 0;
+          return;
+        }
+
+        emberWispAccumulator += deltaSeconds;
+        while (emberWispAccumulator + 1e-9 >= EMBER_WISP_INTERVAL) {
+          emberWispAccumulator = Math.max(
+            0,
+            emberWispAccumulator - EMBER_WISP_INTERVAL
+          );
+          for (const hand of pinchingHands) {
+            const { emberEnd } = getCigaretteGeometry(hand, width, sourceX, sourceY, scale);
+            if (smokeParticles.length >= SMOKE_MAX) smokeParticles.shift();
+
+            smokeParticles.push({
+              x: emberEnd.x,
+              y: emberEnd.y,
+              vx: Math.cos(hand.cigarette.angle) * 7 + (Math.random() - 0.5) * 4,
+              vy: Math.sin(hand.cigarette.angle) * 7 - 9 + (Math.random() - 0.5) * 3,
+              radius: Math.max(2, (hand.cigarette.handSize * scale) * 0.012),
+              life: 1,
+              maxAlpha: 0.12,
+              driftPhase: Math.random() * Math.PI * 2,
+              age: 0,
+              lifetime: 1.8 + Math.random() * 0.6,
+              previousDrift: 0
+            });
+          }
+        }
+      }
+
       function renderFrame() {
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
           const width = canvas.width;
@@ -410,12 +453,15 @@
           }
 
           const isBlowing = Boolean(mouth?.isOpen && inhale > 0.05);
-          if (hands.some((hand) => hand.isPinching) && mouth?.isOpen && inhale > 0.3) {
-            inhaleStatus = "Blow it out!";
+          const pinchingHands = hands.filter((hand) => hand.isPinching);
+          if (pinchingHands.length > 0 && inhale > 0.3) {
+            inhaleStatus = "Now blow it out!";
           } else if (chargingInhale) {
             inhaleStatus = "Inhaling...";
-          } else if (hands.some((hand) => hand.isPinching) && !cigaretteAtMouth) {
+          } else if (pinchingHands.length > 0 && !cigaretteAtMouth) {
             inhaleStatus = "Bring it to your mouth";
+          } else if (pinchingHands.length === 0) {
+            inhaleStatus = "Pinch your fingers";
           } else {
             inhaleStatus = "";
           }
@@ -464,6 +510,14 @@
             }
           }
 
+          emitEmberWisps(
+            smokeDeltaSeconds,
+            pinchingHands,
+            width,
+            sourceX,
+            sourceY,
+            scale
+          );
           updateAndDrawSmoke(
             smokeDeltaSeconds,
             isBlowing,
@@ -471,7 +525,7 @@
             mouth ? mouth.faceWidth * scale : 0
           );
 
-          if (mouth) {
+          if (debugEnabled && mouth) {
             const { x, y } = mapVideoPointToCanvas(
               mouth.center,
               width,
@@ -487,37 +541,51 @@
             context.restore();
           }
 
-          context.save();
-          context.font = `600 ${14 * pixelRatio}px system-ui, sans-serif`;
-          context.textAlign = "right";
-          context.textBaseline = "top";
-          context.fillStyle = "rgba(255, 255, 255, 0.82)";
-          context.shadowColor = "#000000";
-          context.shadowBlur = 5 * pixelRatio;
-          context.fillText(
-            `LEN ${currentCigLengthFactor.toFixed(1)}×  ANG ${currentCigAngleDeg}°  TILT ${currentCigTiltDeg}°`,
-            width - 18 * pixelRatio,
-            18 * pixelRatio
-          );
-          context.fillText(
-            `MOUTH ${mouth ? mouth.open.toFixed(2) : "--"}  ${mouth?.isOpen ? "OPEN" : "CLOSED"}  SMOKE ${smokeParticles.length}`,
-            width - 18 * pixelRatio,
-            40 * pixelRatio
-          );
-          context.fillText(
-            `${inhaleStatus}  INHALE ${Math.round(inhale * 100)}%`,
-            width - 18 * pixelRatio,
-            62 * pixelRatio
-          );
-          const barWidth = 140 * pixelRatio;
-          const barHeight = 8 * pixelRatio;
-          const barX = width - 18 * pixelRatio - barWidth;
-          const barY = 84 * pixelRatio;
-          context.fillStyle = "rgba(255, 255, 255, 0.3)";
-          context.fillRect(barX, barY, barWidth, barHeight);
-          context.fillStyle = "#fb923c";
-          context.fillRect(barX, barY, barWidth * inhale, barHeight);
-          context.restore();
+          if (debugEnabled) {
+            context.save();
+            context.font = `600 ${14 * pixelRatio}px system-ui, sans-serif`;
+            context.textAlign = "right";
+            context.textBaseline = "top";
+            context.fillStyle = "rgba(255, 255, 255, 0.82)";
+            context.shadowColor = "#000000";
+            context.shadowBlur = 5 * pixelRatio;
+            context.fillText(
+              `LEN ${currentCigLengthFactor.toFixed(1)}×  ANG ${currentCigAngleDeg}°  TILT ${currentCigTiltDeg}°`,
+              width - 18 * pixelRatio,
+              18 * pixelRatio
+            );
+            context.fillText(
+              `MOUTH ${mouth ? mouth.open.toFixed(2) : "--"}  ${mouth?.isOpen ? "OPEN" : "CLOSED"}  SMOKE ${smokeParticles.length}`,
+              width - 18 * pixelRatio,
+              40 * pixelRatio
+            );
+            context.fillText(
+              `INHALE ${Math.round(inhale * 100)}%`,
+              width - 18 * pixelRatio,
+              62 * pixelRatio
+            );
+            const barWidth = 140 * pixelRatio;
+            const barHeight = 8 * pixelRatio;
+            const barX = width - 18 * pixelRatio - barWidth;
+            const barY = 84 * pixelRatio;
+            context.fillStyle = "rgba(255, 255, 255, 0.3)";
+            context.fillRect(barX, barY, barWidth, barHeight);
+            context.fillStyle = "#fb923c";
+            context.fillRect(barX, barY, barWidth * inhale, barHeight);
+            context.restore();
+          }
+
+          if (inhaleStatus) {
+            context.save();
+            context.font = `600 ${18 * pixelRatio}px system-ui, sans-serif`;
+            context.textAlign = "center";
+            context.textBaseline = "bottom";
+            context.fillStyle = "rgba(255, 255, 255, 0.95)";
+            context.shadowColor = "#000000";
+            context.shadowBlur = 8 * pixelRatio;
+            context.fillText(inhaleStatus, width / 2, height - 28 * pixelRatio);
+            context.restore();
+          }
         }
 
         window.requestAnimationFrame(renderFrame);
@@ -760,6 +828,12 @@
 
       window.addEventListener("resize", resizeCanvas);
       window.addEventListener("keydown", (event) => {
+        if (event.key.toLowerCase() === "d") {
+          debugEnabled = !debugEnabled;
+          event.preventDefault();
+          return;
+        }
+
         switch (event.key) {
           case "[":
             currentCigAngleDeg -= 5;
