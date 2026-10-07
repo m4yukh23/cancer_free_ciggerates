@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#111827">
     <title>Webcam Selfie View</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js"></script>
     <style>
       :root {
         color-scheme: dark;
@@ -106,6 +107,8 @@
       const CIG_LENGTH_FACTOR = 1.6;
       const CIG_ANGLE_DEG = 0;
       const CIG_TILT_DEG = 65;
+      const MOUTH_OPEN_THRESHOLD = 0.28;
+      const NEAR_MOUTH_FACTOR = 0.3;
       let currentCigLengthFactor = CIG_LENGTH_FACTOR;
       let currentCigAngleDeg = CIG_ANGLE_DEG;
       let currentCigTiltDeg = CIG_TILT_DEG;
@@ -117,7 +120,9 @@
       const startButton = document.querySelector("#start-camera");
       const message = document.querySelector("#message");
       let handTracker;
+      let faceTracker;
       let hands = [];
+      let mouth = null;
       let isTracking = false;
       let lastProcessedVideoTime = -1;
 
@@ -125,6 +130,13 @@
         const pixelRatio = window.devicePixelRatio || 1;
         canvas.width = Math.round(window.innerWidth * pixelRatio);
         canvas.height = Math.round(window.innerHeight * pixelRatio);
+      }
+
+      function mapVideoPointToCanvas(point, width, scale, sourceX, sourceY) {
+        return {
+          x: width - (point.x * video.videoWidth - sourceX) * scale,
+          y: (point.y * video.videoHeight - sourceY) * scale
+        };
       }
 
       function drawCigarette(hand, width, height, sourceX, sourceY, scale, pixelRatio) {
@@ -255,8 +267,13 @@
 
             for (const landmarkIndex of [4, 8]) {
               const landmark = hand.landmarks[landmarkIndex];
-              const x = width - (landmark.x * video.videoWidth - sourceX) * scale;
-              const y = (landmark.y * video.videoHeight - sourceY) * scale;
+              const { x, y } = mapVideoPointToCanvas(
+                landmark,
+                width,
+                scale,
+                sourceX,
+                sourceY
+              );
               const radius = 12 * pixelRatio;
 
               context.save();
@@ -270,6 +287,22 @@
             }
           }
 
+          if (mouth) {
+            const { x, y } = mapVideoPointToCanvas(
+              mouth.center,
+              width,
+              scale,
+              sourceX,
+              sourceY
+            );
+            context.save();
+            context.fillStyle = "#22c55e";
+            context.beginPath();
+            context.arc(x, y, 5 * pixelRatio, 0, Math.PI * 2);
+            context.fill();
+            context.restore();
+          }
+
           context.save();
           context.font = `600 ${14 * pixelRatio}px system-ui, sans-serif`;
           context.textAlign = "right";
@@ -281,6 +314,11 @@
             `LEN ${currentCigLengthFactor.toFixed(1)}×  ANG ${currentCigAngleDeg}°  TILT ${currentCigTiltDeg}°`,
             width - 18 * pixelRatio,
             18 * pixelRatio
+          );
+          context.fillText(
+            `MOUTH ${mouth ? mouth.open.toFixed(2) : "--"}  ${mouth?.isOpen ? "OPEN" : "CLOSED"}`,
+            width - 18 * pixelRatio,
+            40 * pixelRatio
           );
           context.restore();
         }
@@ -355,6 +393,48 @@
         });
       }
 
+      function updateMouth(results) {
+        const landmarks = results.multiFaceLandmarks?.[0];
+        if (!landmarks) {
+          mouth = null;
+          return;
+        }
+
+        const centerA = landmarks[13];
+        const centerB = landmarks[14];
+        const leftMouth = landmarks[61];
+        const rightMouth = landmarks[291];
+        const leftFace = landmarks[234];
+        const rightFace = landmarks[454];
+        const distance = (first, second) =>
+          Math.hypot(
+            (first.x - second.x) * video.videoWidth,
+            (first.y - second.y) * video.videoHeight
+          );
+        const mouthWidth = distance(leftMouth, rightMouth);
+        const faceWidth = distance(leftFace, rightFace);
+        const measuredOpen = mouthWidth > 0 ? distance(centerA, centerB) / mouthWidth : 0;
+        const previous = mouth;
+        const center = {
+          x: (centerA.x + centerB.x) / 2,
+          y: (centerA.y + centerB.y) / 2
+        };
+        const open = measuredOpen;
+
+        mouth = {
+          center: previous
+            ? {
+                x: previous.center.x * 0.65 + center.x * 0.35,
+                y: previous.center.y * 0.65 + center.y * 0.35
+              }
+            : center,
+          open: previous ? previous.open * 0.65 + open * 0.35 : open,
+          faceWidth,
+          isOpen: (previous ? previous.open * 0.65 + open * 0.35 : open) >=
+            MOUTH_OPEN_THRESHOLD
+        };
+      }
+
       function handleTrackingError(error) {
         if (!isTracking) return;
 
@@ -362,8 +442,11 @@
         video.srcObject?.getTracks().forEach((track) => track.stop());
         video.srcObject = null;
         hands = [];
+        mouth = null;
         handTracker?.close();
         handTracker = null;
+        faceTracker?.close();
+        faceTracker = null;
         panel.hidden = false;
         startButton.disabled = false;
         message.textContent =
@@ -394,6 +477,7 @@
 
         try {
           await handTracker.send({ image: video });
+          await faceTracker.send({ image: video });
           scheduleHandFrame();
         } catch (error) {
           handleTrackingError(error);
@@ -411,6 +495,9 @@
           }
           if (typeof Hands === "undefined") {
             throw new Error("MediaPipe Hands could not be loaded.");
+          }
+          if (typeof FaceMesh === "undefined") {
+            throw new Error("MediaPipe Face Mesh could not be loaded.");
           }
 
           stream = await navigator.mediaDevices.getUserMedia({
@@ -433,7 +520,19 @@
           handTracker.onResults((results) => {
             updateHands(results);
           });
+          faceTracker = new FaceMesh({
+            locateFile: (file) =>
+              `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}`
+          });
+          faceTracker.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+          });
+          faceTracker.onResults(updateMouth);
           await handTracker.send({ image: video });
+          await faceTracker.send({ image: video });
 
           resizeCanvas();
           isTracking = true;
@@ -446,6 +545,9 @@
           video.srcObject = null;
           handTracker?.close();
           handTracker = null;
+          faceTracker?.close();
+          faceTracker = null;
+          mouth = null;
           startButton.disabled = false;
           message.textContent =
             "We couldn’t start your camera or hand tracking. Check your camera permission and internet connection, then try again.";
