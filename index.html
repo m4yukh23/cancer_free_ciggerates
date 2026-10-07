@@ -125,6 +125,9 @@
       let mouth = null;
       let isTracking = false;
       let lastProcessedVideoTime = -1;
+      let inhale = 0;
+      let lastInhaleUpdateTime = null;
+      let inhaleStatus = "";
 
       function resizeCanvas() {
         const pixelRatio = window.devicePixelRatio || 1;
@@ -139,12 +142,37 @@
         };
       }
 
+      function getCigaretteGeometry(hand, width, sourceX, sourceY, scale) {
+        const { x, y, angle, handSize } = hand.cigarette;
+        const anchor = mapVideoPointToCanvas(
+          { x, y },
+          width,
+          scale,
+          sourceX,
+          sourceY
+        );
+        const projectedFullLength =
+          handSize * scale * currentCigLengthFactor *
+          Math.cos((currentCigTiltDeg * Math.PI) / 180);
+
+        return {
+          anchor,
+          filterEnd: {
+            x: anchor.x - Math.cos(angle) * projectedFullLength * 0.4,
+            y: anchor.y - Math.sin(angle) * projectedFullLength * 0.4
+          }
+        };
+      }
+
       function drawCigarette(hand, width, height, sourceX, sourceY, scale, pixelRatio) {
         const { x, y, angle, handSize } = hand.cigarette;
         const pinchX = width - (x * video.videoWidth - sourceX) * scale;
         const pinchY = (y * video.videoHeight - sourceY) * scale;
         const tiltRadians = (currentCigTiltDeg * Math.PI) / 180;
-        const fullLength = handSize * scale * currentCigLengthFactor;
+        const fullLength = Math.max(
+          handSize * scale * 0.25,
+          (handSize * currentCigLengthFactor - hand.cigarette.burnedLength) * scale
+        );
         const projectedFullLength = fullLength * Math.cos(tiltRadians);
         const visibleLength = projectedFullLength * 0.6;
         const perspective = Math.sin(tiltRadians);
@@ -154,6 +182,7 @@
         const emberRadiusAlongAxis = emberRadius * perspective;
         const emberX = visibleLength;
         const flicker = 0.88 + (Math.sin(performance.now() / 85) + 1) * 0.08;
+        const glowScale = 1 + inhale * 0.6;
 
         context.save();
         context.translate(pinchX, pinchY);
@@ -183,19 +212,22 @@
         context.translate(emberX, 0);
         context.scale(Math.max(0.12, emberRadiusAlongAxis), emberRadius);
 
-        const glow = context.createRadialGradient(0, 0, 0.1, 0, 0, 3);
-        glow.addColorStop(0, `rgba(255, 92, 20, ${0.48 * flicker})`);
-        glow.addColorStop(0.55, `rgba(255, 48, 8, ${0.24 * flicker})`);
+        const glow = context.createRadialGradient(0, 0, 0.1, 0, 0, 3 * glowScale);
+        glow.addColorStop(
+          0,
+          `rgba(255, ${Math.round(92 + inhale * 145)}, ${Math.round(20 + inhale * 210)}, ${0.48 * flicker})`
+        );
+        glow.addColorStop(0.55, `rgba(255, ${Math.round(48 + inhale * 120)}, 8, ${0.24 * flicker})`);
         glow.addColorStop(1, "rgba(255, 30, 0, 0)");
         context.fillStyle = glow;
         context.beginPath();
-        context.arc(0, 0, 3, 0, Math.PI * 2);
+        context.arc(0, 0, 3 * glowScale, 0, Math.PI * 2);
         context.fill();
 
         const emberRing = context.createRadialGradient(0, 0, 0.54, 0, 0, 1);
-        emberRing.addColorStop(0, "#ff3212");
-        emberRing.addColorStop(0.72, "#ff4a12");
-        emberRing.addColorStop(1, "#ffbd45");
+        emberRing.addColorStop(0, `rgb(255, ${Math.round(50 + inhale * 205)}, ${Math.round(18 + inhale * 222)})`);
+        emberRing.addColorStop(0.72, `rgb(255, ${Math.round(74 + inhale * 150)}, ${Math.round(18 + inhale * 140)})`);
+        emberRing.addColorStop(1, `rgb(255, ${Math.round(189 + inhale * 66)}, ${Math.round(69 + inhale * 160)})`);
         context.fillStyle = emberRing;
         context.beginPath();
         context.ellipse(0, 0, 1, 1, 0, 0, Math.PI * 2);
@@ -242,6 +274,63 @@
           const sourceHeight = height / scale;
           const sourceX = (video.videoWidth - sourceWidth) / 2;
           const sourceY = (video.videoHeight - sourceHeight) / 2;
+          const now = performance.now();
+          const deltaSeconds = lastInhaleUpdateTime === null
+            ? 0
+            : Math.min((now - lastInhaleUpdateTime) / 1000, 0.1);
+          lastInhaleUpdateTime = now;
+          let cigaretteAtMouth = false;
+          let chargingInhale = false;
+
+          if (mouth) {
+            const mouthPoint = mapVideoPointToCanvas(
+              mouth.center,
+              width,
+              scale,
+              sourceX,
+              sourceY
+            );
+            for (const hand of hands) {
+              if (!hand.isPinching) continue;
+
+              const { filterEnd } = getCigaretteGeometry(
+                hand,
+                width,
+                sourceX,
+                sourceY,
+                scale
+              );
+              const distanceToMouth = Math.hypot(
+                filterEnd.x - mouthPoint.x,
+                filterEnd.y - mouthPoint.y
+              );
+              const nearDistance = mouth.faceWidth * scale * NEAR_MOUTH_FACTOR;
+              if (distanceToMouth <= nearDistance) {
+                cigaretteAtMouth = true;
+                if (!mouth.isOpen) {
+                  chargingInhale = true;
+                  hand.cigarette.burnedLength +=
+                    hand.cigarette.handSize * 0.012 * deltaSeconds;
+                }
+              }
+            }
+          }
+
+          if (chargingInhale) {
+            inhale = Math.min(1, inhale + 0.5 * deltaSeconds);
+          } else if (!cigaretteAtMouth) {
+            inhale = Math.max(0, inhale - 0.3 * deltaSeconds);
+          }
+
+          if (hands.some((hand) => hand.isPinching) && mouth?.isOpen && inhale > 0.3) {
+            inhaleStatus = "Blow it out!";
+          } else if (chargingInhale) {
+            inhaleStatus = "Inhaling...";
+          } else if (hands.some((hand) => hand.isPinching) && !cigaretteAtMouth) {
+            inhaleStatus = "Bring it to your mouth";
+          } else {
+            inhaleStatus = "";
+          }
 
           context.save();
           context.setTransform(-1, 0, 0, 1, width, 0);
@@ -320,6 +409,19 @@
             width - 18 * pixelRatio,
             40 * pixelRatio
           );
+          context.fillText(
+            `${inhaleStatus}  INHALE ${Math.round(inhale * 100)}%`,
+            width - 18 * pixelRatio,
+            62 * pixelRatio
+          );
+          const barWidth = 140 * pixelRatio;
+          const barHeight = 8 * pixelRatio;
+          const barX = width - 18 * pixelRatio - barWidth;
+          const barY = 84 * pixelRatio;
+          context.fillStyle = "rgba(255, 255, 255, 0.3)";
+          context.fillRect(barX, barY, barWidth, barHeight);
+          context.fillStyle = "#fb923c";
+          context.fillRect(barX, barY, barWidth * inhale, barHeight);
           context.restore();
         }
 
@@ -380,9 +482,15 @@
                 x: priorCigarette.x * 0.7 + pinchPoint.x * 0.3,
                 y: priorCigarette.y * 0.7 + pinchPoint.y * 0.3,
                 angle: priorCigarette.angle + angleDifference * 0.25,
-                handSize: priorCigarette.handSize * 0.7 + referenceDistance * 0.3
+                handSize: priorCigarette.handSize * 0.7 + referenceDistance * 0.3,
+                burnedLength: priorCigarette.burnedLength || 0
               }
-            : { ...pinchPoint, angle: targetAngle, handSize: referenceDistance };
+            : {
+                ...pinchPoint,
+                angle: targetAngle,
+                handSize: referenceDistance,
+                burnedLength: 0
+              };
 
           return {
             landmarks: smoothedLandmarks,
