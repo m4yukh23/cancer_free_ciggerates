@@ -109,11 +109,13 @@
       const CIG_TILT_DEG = 65;
       const MOUTH_OPEN_THRESHOLD = 0.28;
       const NEAR_MOUTH_FACTOR = 0.3;
-      const SMOKE_MAX = 600;
-      const SMOKE_RATE = 6;
+      const SMOKE_MAX = 800;
+      const SMOKE_RATE = 9;
       const SMOKE_GROWTH = 0.9;
       const SMOKE_RISE = 9;
       const EMBER_WISP_INTERVAL = 0.1;
+      const ASH_FLAKE_INTERVAL = 3;
+      const SPARK_INTERVAL = 0.65;
       let currentCigLengthFactor = CIG_LENGTH_FACTOR;
       let currentCigAngleDeg = CIG_ANGLE_DEG;
       let currentCigTiltDeg = CIG_TILT_DEG;
@@ -125,14 +127,17 @@
       smokeSprite.height = 64;
       const smokeSpriteContext = smokeSprite.getContext("2d");
       const smokeGradient = smokeSpriteContext.createRadialGradient(32, 32, 0, 32, 32, 32);
-      smokeGradient.addColorStop(0, "rgba(255, 255, 255, 0.9)");
-      smokeGradient.addColorStop(0.35, "rgba(255, 255, 255, 0.4)");
+      smokeGradient.addColorStop(0, "rgba(255, 255, 255, 1)");
+      smokeGradient.addColorStop(0.4, "rgba(255, 255, 255, 1)");
+      smokeGradient.addColorStop(0.72, "rgba(255, 255, 255, 0.38)");
       smokeGradient.addColorStop(1, "rgba(255, 255, 255, 0)");
       smokeSpriteContext.fillStyle = smokeGradient;
       smokeSpriteContext.fillRect(0, 0, 64, 64);
       const smokeParticles = [];
       let smokeSpawnAccumulator = 0;
       let emberWispAccumulator = 0;
+      let ashFlakeAccumulator = 0;
+      let sparkAccumulator = 0;
       const video = document.querySelector("#camera-source");
       const panel = document.querySelector("#start-panel");
       const startButton = document.querySelector("#start-camera");
@@ -300,19 +305,18 @@
           smokeSpawnAccumulator -= spawnCount;
 
           for (let index = 0; index < spawnCount; index += 1) {
-            if (smokeParticles.length >= SMOKE_MAX) smokeParticles.shift();
-
             const spread = (Math.random() - 0.5) * (Math.PI / 3);
             const direction = Math.PI / 2 + spread;
             const speed = (35 + inhale * 90) * (0.8 + Math.random() * 0.4);
-            smokeParticles.push({
+            addEmberDebrisParticle({
+              type: "breath",
               x: mouthPoint.x + (Math.random() - 0.5) * faceWidth * 0.06,
               y: mouthPoint.y + faceWidth * 0.025,
               vx: Math.cos(direction) * speed,
               vy: Math.sin(direction) * speed,
-              radius: faceWidth * 0.06 * (0.8 + Math.random() * 0.4),
+              radius: faceWidth * 0.078 * (0.8 + Math.random() * 0.4),
               life: 1,
-              maxAlpha: 0.45,
+              maxAlpha: 0.7,
               driftPhase: Math.random() * Math.PI * 2,
               age: 0,
               lifetime: 2.5 + Math.random() * 1.5,
@@ -335,33 +339,87 @@
 
           particle.vx *= damping;
           particle.vy *= damping;
-          if (particle.age > 0.15) particle.vy -= SMOKE_RISE * deltaSeconds;
-          const drift = Math.sin(particle.age * 2.4 + particle.driftPhase) * 10;
-          particle.x += particle.vx * deltaSeconds + (drift - particle.previousDrift);
+          if (particle.type === "ash") {
+            particle.vy += 120 * deltaSeconds;
+            particle.x += particle.vx * deltaSeconds;
+          } else if (particle.type === "spark") {
+            particle.x += particle.vx * deltaSeconds;
+          } else {
+            if (particle.age > 0.15) particle.vy -= SMOKE_RISE * deltaSeconds;
+            const drift = Math.sin(particle.age * 2.4 + particle.driftPhase) * 10;
+            particle.x += particle.vx * deltaSeconds + (drift - particle.previousDrift);
+            particle.previousDrift = drift;
+          }
           particle.y += particle.vy * deltaSeconds;
-          particle.previousDrift = drift;
-          particle.radius *= 1 + SMOKE_GROWTH * deltaSeconds;
+          if (particle.type === "breath") {
+            particle.radius *= 1 + SMOKE_GROWTH * deltaSeconds;
+          }
 
           context.save();
-          context.globalAlpha = particle.maxAlpha * particle.life;
-          context.drawImage(
-            smokeSprite,
-            particle.x - particle.radius,
-            particle.y - particle.radius,
-            particle.radius * 2,
-            particle.radius * 2
-          );
+          const fade = particle.type === "breath"
+            ? 1 - Math.pow(1 - particle.life, 3)
+            : particle.life;
+          context.globalAlpha = particle.maxAlpha * fade;
+          if (particle.type === "ash") {
+            context.translate(particle.x, particle.y);
+            context.rotate(particle.rotation);
+            context.fillStyle = "#96928c";
+            context.beginPath();
+            context.moveTo(-particle.radius, -particle.radius * 0.35);
+            context.lineTo(-particle.radius * 0.2, -particle.radius);
+            context.lineTo(particle.radius, -particle.radius * 0.5);
+            context.lineTo(particle.radius * 0.7, particle.radius * 0.65);
+            context.lineTo(-particle.radius * 0.5, particle.radius);
+            context.closePath();
+            context.fill();
+            particle.rotation += particle.rotationSpeed * deltaSeconds;
+          } else if (particle.type === "spark") {
+            context.fillStyle = "#ff8a24";
+            context.shadowColor = "#ff5a12";
+            context.shadowBlur = particle.radius * 2;
+            context.beginPath();
+            context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+            context.fill();
+          } else {
+            context.drawImage(
+              smokeSprite,
+              particle.x - particle.radius,
+              particle.y - particle.radius,
+              particle.radius * 2,
+              particle.radius * 2
+            );
+          }
           context.restore();
         }
+      }
+
+      function addEmberDebrisParticle(particle) {
+        if (smokeParticles.length >= SMOKE_MAX) {
+          const oldestNonBreath = smokeParticles.findIndex(
+            (existing) => existing.type !== "breath"
+          );
+          if (oldestNonBreath < 0) return;
+          smokeParticles.splice(oldestNonBreath, 1);
+        }
+        smokeParticles.push(particle);
       }
 
       function emitEmberWisps(deltaSeconds, pinchingHands, width, sourceX, sourceY, scale) {
         if (pinchingHands.length === 0) {
           emberWispAccumulator = 0;
+          ashFlakeAccumulator = 0;
+          sparkAccumulator = 0;
           return;
         }
 
         emberWispAccumulator += deltaSeconds;
+        ashFlakeAccumulator += deltaSeconds;
+        if (inhale > 0.5) {
+          sparkAccumulator += deltaSeconds;
+        } else {
+          sparkAccumulator = 0;
+        }
+
         while (emberWispAccumulator + 1e-9 >= EMBER_WISP_INTERVAL) {
           emberWispAccumulator = Math.max(
             0,
@@ -369,9 +427,8 @@
           );
           for (const hand of pinchingHands) {
             const { emberEnd } = getCigaretteGeometry(hand, width, sourceX, sourceY, scale);
-            if (smokeParticles.length >= SMOKE_MAX) smokeParticles.shift();
-
-            smokeParticles.push({
+            addEmberDebrisParticle({
+              type: "wisp",
               x: emberEnd.x,
               y: emberEnd.y,
               vx: Math.cos(hand.cigarette.angle) * 7 + (Math.random() - 0.5) * 4,
@@ -384,6 +441,53 @@
               lifetime: 1.8 + Math.random() * 0.6,
               previousDrift: 0
             });
+          }
+        }
+
+        while (ashFlakeAccumulator >= ASH_FLAKE_INTERVAL) {
+          ashFlakeAccumulator -= ASH_FLAKE_INTERVAL;
+          for (const hand of pinchingHands) {
+            const { emberEnd } = getCigaretteGeometry(hand, width, sourceX, sourceY, scale);
+            addEmberDebrisParticle({
+              type: "ash",
+              x: emberEnd.x,
+              y: emberEnd.y,
+              vx: (Math.random() - 0.5) * 9,
+              vy: 4 + Math.random() * 3,
+              radius: Math.max(2, hand.cigarette.handSize * scale * 0.018),
+              life: 1,
+              maxAlpha: 0.75,
+              age: 0,
+              lifetime: 2 + Math.random() * 1.2,
+              rotation: Math.random() * Math.PI * 2,
+              rotationSpeed: (Math.random() - 0.5) * 5
+            });
+          }
+        }
+
+        while (sparkAccumulator >= SPARK_INTERVAL) {
+          sparkAccumulator -= SPARK_INTERVAL;
+          for (const hand of pinchingHands) {
+            if (Math.random() > 0.35) continue;
+
+            const { emberEnd } = getCigaretteGeometry(hand, width, sourceX, sourceY, scale);
+            const sparkCount = 2 + Math.floor(Math.random() * 2);
+            for (let index = 0; index < sparkCount; index += 1) {
+              const angle = Math.random() * Math.PI * 2;
+              const speed = 18 + Math.random() * 32;
+              addEmberDebrisParticle({
+                type: "spark",
+                x: emberEnd.x,
+                y: emberEnd.y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                radius: 1 + Math.random() * 1.5,
+                life: 1,
+                maxAlpha: 0.9,
+                age: 0,
+                lifetime: 0.25 + Math.random() * 0.3
+              });
+            }
           }
         }
       }
