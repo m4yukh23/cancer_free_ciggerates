@@ -103,6 +103,13 @@
     </main>
 
     <script>
+      const CIG_LENGTH_FACTOR = 1.6;
+      const CIG_ANGLE_DEG = 0;
+      const CIG_TILT_DEG = 65;
+      let currentCigLengthFactor = CIG_LENGTH_FACTOR;
+      let currentCigAngleDeg = CIG_ANGLE_DEG;
+      let currentCigTiltDeg = CIG_TILT_DEG;
+
       const canvas = document.querySelector("#camera-view");
       const context = canvas.getContext("2d");
       const video = document.querySelector("#camera-source");
@@ -118,6 +125,100 @@
         const pixelRatio = window.devicePixelRatio || 1;
         canvas.width = Math.round(window.innerWidth * pixelRatio);
         canvas.height = Math.round(window.innerHeight * pixelRatio);
+      }
+
+      function drawCigarette(hand, width, height, sourceX, sourceY, scale, pixelRatio) {
+        const { x, y, angle, handSize } = hand.cigarette;
+        const pinchX = width - (x * video.videoWidth - sourceX) * scale;
+        const pinchY = (y * video.videoHeight - sourceY) * scale;
+        const tiltRadians = (currentCigTiltDeg * Math.PI) / 180;
+        const fullLength = handSize * scale * currentCigLengthFactor;
+        const projectedFullLength = fullLength * Math.cos(tiltRadians);
+        const visibleLength = projectedFullLength * 0.6;
+        const perspective = Math.sin(tiltRadians);
+        const thickness = Math.max(9 * pixelRatio, fullLength * 0.09);
+        const bodyHalfWidth = thickness / 2;
+        const emberRadius = thickness * 0.9 * (1 + 0.5 * perspective);
+        const emberRadiusAlongAxis = emberRadius * perspective;
+        const emberX = visibleLength;
+        const flicker = 0.88 + (Math.sin(performance.now() / 85) + 1) * 0.08;
+
+        context.save();
+        context.translate(pinchX, pinchY);
+        context.rotate(angle);
+
+        const bodyGradient = context.createLinearGradient(
+          0,
+          -bodyHalfWidth,
+          0,
+          bodyHalfWidth
+        );
+        bodyGradient.addColorStop(0, "#77736e");
+        bodyGradient.addColorStop(0.2, "#f4f1e8");
+        bodyGradient.addColorStop(0.5, "#ffffff");
+        bodyGradient.addColorStop(0.8, "#f4f1e8");
+        bodyGradient.addColorStop(1, "#77736e");
+        context.fillStyle = bodyGradient;
+        context.beginPath();
+        context.moveTo(0, -bodyHalfWidth * 0.8);
+        context.lineTo(emberX, -emberRadius);
+        context.lineTo(emberX, emberRadius);
+        context.lineTo(0, bodyHalfWidth * 0.8);
+        context.closePath();
+        context.fill();
+
+        context.save();
+        context.translate(emberX, 0);
+        context.scale(Math.max(0.12, emberRadiusAlongAxis), emberRadius);
+
+        const glow = context.createRadialGradient(0, 0, 0.1, 0, 0, 3);
+        glow.addColorStop(0, `rgba(255, 92, 20, ${0.48 * flicker})`);
+        glow.addColorStop(0.55, `rgba(255, 48, 8, ${0.24 * flicker})`);
+        glow.addColorStop(1, "rgba(255, 30, 0, 0)");
+        context.fillStyle = glow;
+        context.beginPath();
+        context.arc(0, 0, 3, 0, Math.PI * 2);
+        context.fill();
+
+        const emberRing = context.createRadialGradient(0, 0, 0.54, 0, 0, 1);
+        emberRing.addColorStop(0, "#ff3212");
+        emberRing.addColorStop(0.72, "#ff4a12");
+        emberRing.addColorStop(1, "#ffbd45");
+        context.fillStyle = emberRing;
+        context.beginPath();
+        context.ellipse(0, 0, 1, 1, 0, 0, Math.PI * 2);
+        context.fill();
+
+        context.fillStyle = "#77736e";
+        context.beginPath();
+        const ashPoints = [
+          [0.56, -0.08],
+          [0.64, -0.45],
+          [0.18, -0.64],
+          [-0.25, -0.52],
+          [-0.61, -0.31],
+          [-0.67, 0.08],
+          [-0.43, 0.49],
+          [-0.05, 0.58],
+          [0.38, 0.42],
+          [0.63, 0.2]
+        ];
+        ashPoints.forEach(([pointX, pointY], index) => {
+          const ashX = pointX;
+          const ashY = pointY;
+          if (index === 0) context.moveTo(ashX, ashY);
+          else context.lineTo(ashX, ashY);
+        });
+        context.closePath();
+        context.fill();
+
+        context.fillStyle = `rgba(255, 104, 26, ${0.78 * flicker})`;
+        context.beginPath();
+        context.arc(0.48, -0.08, 0.12, 0, Math.PI * 2);
+        context.arc(-0.42, 0.24, 0.1, 0, Math.PI * 2);
+        context.fill();
+        context.restore();
+        context.restore();
       }
 
       function renderFrame() {
@@ -147,6 +248,11 @@
 
           const pixelRatio = window.devicePixelRatio || 1;
           for (const hand of hands) {
+            if (hand.isPinching) {
+              drawCigarette(hand, width, height, sourceX, sourceY, scale, pixelRatio);
+              continue;
+            }
+
             for (const landmarkIndex of [4, 8]) {
               const landmark = hand.landmarks[landmarkIndex];
               const x = width - (landmark.x * video.videoWidth - sourceX) * scale;
@@ -154,9 +260,9 @@
               const radius = 12 * pixelRatio;
 
               context.save();
-              context.shadowColor = hand.isPinching ? "#facc15" : "#a78bfa";
+              context.shadowColor = "#a78bfa";
               context.shadowBlur = 22 * pixelRatio;
-              context.fillStyle = hand.isPinching ? "#fde047" : "#c4b5fd";
+              context.fillStyle = "#c4b5fd";
               context.beginPath();
               context.arc(x, y, radius, 0, Math.PI * 2);
               context.fill();
@@ -164,17 +270,19 @@
             }
           }
 
-          if (hands.some((hand) => hand.isPinching)) {
-            context.save();
-            context.font = `700 ${32 * pixelRatio}px system-ui, sans-serif`;
-            context.textAlign = "center";
-            context.textBaseline = "top";
-            context.shadowColor = "#facc15";
-            context.shadowBlur = 18 * pixelRatio;
-            context.fillStyle = "#fde047";
-            context.fillText("PINCH", width / 2, 28 * pixelRatio);
-            context.restore();
-          }
+          context.save();
+          context.font = `600 ${14 * pixelRatio}px system-ui, sans-serif`;
+          context.textAlign = "right";
+          context.textBaseline = "top";
+          context.fillStyle = "rgba(255, 255, 255, 0.82)";
+          context.shadowColor = "#000000";
+          context.shadowBlur = 5 * pixelRatio;
+          context.fillText(
+            `LEN ${currentCigLengthFactor.toFixed(1)}×  ANG ${currentCigAngleDeg}°  TILT ${currentCigTiltDeg}°`,
+            width - 18 * pixelRatio,
+            18 * pixelRatio
+          );
+          context.restore();
         }
 
         window.requestAnimationFrame(renderFrame);
@@ -206,15 +314,41 @@
             );
           const referenceDistance = pixelDistance(wrist, middleKnuckle);
           const pinchDistance = pixelDistance(thumb, index);
+          const pinchPoint = {
+            x: (thumb.x + index.x) / 2,
+            y: (thumb.y + index.y) / 2
+          };
+          const indexBase = smoothedLandmarks[6];
+          const indexTip = smoothedLandmarks[8];
+          const targetAngle = Math.atan2(
+            (indexTip.y - indexBase.y) * video.videoHeight,
+            -(indexTip.x - indexBase.x) * video.videoWidth
+          ) + (currentCigAngleDeg * Math.PI) / 180;
           const pinchDetected =
             referenceDistance > 0 &&
             pinchDistance / referenceDistance < 0.38;
           const pinchFramesRemaining = pinchDetected
             ? 4
             : Math.max(0, (previous?.pinchFramesRemaining || 0) - 1);
+          const priorCigarette = previous?.cigarette;
+          const angleDifference = priorCigarette
+            ? Math.atan2(
+                Math.sin(targetAngle - priorCigarette.angle),
+                Math.cos(targetAngle - priorCigarette.angle)
+              )
+            : 0;
+          const cigarette = priorCigarette
+            ? {
+                x: priorCigarette.x * 0.7 + pinchPoint.x * 0.3,
+                y: priorCigarette.y * 0.7 + pinchPoint.y * 0.3,
+                angle: priorCigarette.angle + angleDifference * 0.25,
+                handSize: priorCigarette.handSize * 0.7 + referenceDistance * 0.3
+              }
+            : { ...pinchPoint, angle: targetAngle, handSize: referenceDistance };
 
           return {
             landmarks: smoothedLandmarks,
+            cigarette,
             pinchFramesRemaining,
             isPinching: pinchFramesRemaining > 0
           };
@@ -320,6 +454,32 @@
       }
 
       window.addEventListener("resize", resizeCanvas);
+      window.addEventListener("keydown", (event) => {
+        switch (event.key) {
+          case "[":
+            currentCigAngleDeg -= 5;
+            break;
+          case "]":
+            currentCigAngleDeg += 5;
+            break;
+          case "-":
+            currentCigLengthFactor = Math.max(0.3, currentCigLengthFactor - 0.1);
+            break;
+          case "=":
+            currentCigLengthFactor = Math.min(3, currentCigLengthFactor + 0.1);
+            break;
+          case ";":
+            currentCigTiltDeg = Math.max(0, currentCigTiltDeg - 5);
+            break;
+          case "'":
+            currentCigTiltDeg = Math.min(90, currentCigTiltDeg + 5);
+            break;
+          default:
+            return;
+        }
+
+        event.preventDefault();
+      });
       resizeCanvas();
       startButton.addEventListener("click", startCamera);
     </script>
