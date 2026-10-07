@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111827">
+    <title>Webcam Selfie View</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #111827;
+        color: #f9fafb;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        min-height: 100vh;
+        min-height: 100dvh;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .start-panel {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 1rem;
+        padding: 1.5rem;
+        text-align: center;
+        background: #111827;
+      }
+
+      .start-panel[hidden] {
+        display: none;
+      }
+
+      .start-panel p {
+        max-width: 28rem;
+        margin: 0;
+        color: #d1d5db;
+        line-height: 1.5;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 0.85rem 1.4rem;
+        background: #4f46e5;
+        color: white;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #6366f1;
+      }
+
+      button:focus-visible {
+        outline: 3px solid #c4b5fd;
+        outline-offset: 3px;
+      }
+
+      #message {
+        min-height: 1.5em;
+      }
+
+      .camera-source {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="camera-view" role="img" aria-label="Mirrored live webcam view"></canvas>
+    <video class="camera-source" id="camera-source" autoplay muted playsinline></video>
+    <main class="start-panel" id="start-panel">
+      <button id="start-camera" type="button">Start camera</button>
+      <p id="message" role="status" aria-live="polite">Your live selfie view will appear here.</p>
+    </main>
+
+    <script>
+      const canvas = document.querySelector("#camera-view");
+      const context = canvas.getContext("2d");
+      const video = document.querySelector("#camera-source");
+      const panel = document.querySelector("#start-panel");
+      const startButton = document.querySelector("#start-camera");
+      const message = document.querySelector("#message");
+
+      function resizeCanvas() {
+        const pixelRatio = window.devicePixelRatio || 1;
+        canvas.width = Math.round(window.innerWidth * pixelRatio);
+        canvas.height = Math.round(window.innerHeight * pixelRatio);
+      }
+
+      function renderFrame() {
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          const width = canvas.width;
+          const height = canvas.height;
+          const scale = Math.max(width / video.videoWidth, height / video.videoHeight);
+          const sourceWidth = width / scale;
+          const sourceHeight = height / scale;
+          const sourceX = (video.videoWidth - sourceWidth) / 2;
+          const sourceY = (video.videoHeight - sourceHeight) / 2;
+
+          context.save();
+          context.setTransform(-1, 0, 0, 1, width, 0);
+          context.drawImage(
+            video,
+            sourceX,
+            sourceY,
+            sourceWidth,
+            sourceHeight,
+            0,
+            0,
+            width,
+            height
+          );
+          context.restore();
+        }
+
+        window.requestAnimationFrame(renderFrame);
+      }
+
+      async function startCamera() {
+        startButton.disabled = true;
+        message.textContent = "Requesting camera access…";
+        let stream;
+
+        try {
+          if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error("Camera access is unavailable in this browser or page context.");
+          }
+
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { facingMode: "user" }
+          });
+          video.srcObject = stream;
+          await video.play();
+
+          resizeCanvas();
+          panel.hidden = true;
+          window.requestAnimationFrame(renderFrame);
+        } catch (error) {
+          stream?.getTracks().forEach((track) => track.stop());
+          video.srcObject = null;
+          startButton.disabled = false;
+          message.textContent =
+            "We couldn’t start your camera. Check your browser permission and try again.";
+          console.error("Unable to start the webcam:", error);
+        }
+      }
+
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
+      startButton.addEventListener("click", startCamera);
+    </script>
+  </body>
+</html>
